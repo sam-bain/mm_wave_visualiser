@@ -4,6 +4,7 @@ import sys
 import os
 import time
 import threading
+import math
 
 #Specify the IP address to point to for mavlink messages
 UDP_IP_ADD = '192.168.2.149'
@@ -17,6 +18,11 @@ PLOT_SIZE = 5 #meters
 #Specify the plot refresh rate
 REFRESH_RATE = 10 #Hz
 
+#Frame rate of obstacle messages
+FRAME_RATE = 25 #Hz
+
+FRAMES_PER_PLOT = math.ceil(FRAME_RATE/REFRESH_RATE)
+
 DEBUG = False
 
 class RadarVisualiser:
@@ -24,8 +30,8 @@ class RadarVisualiser:
 
         #Create instances of the mavlink subscriber and plotter
         self.mavlink_subscriber = MavlinkSubscriber(UDP_IP_ADD, DEBUG)
-        self.plotter1 = Plotter(ViewOrientation.TopDown, AIRCRAFT_TYPE, PLOT_SIZE, REFRESH_RATE, DEBUG, clear=True)
-        # self.plotter2 = Plotter(ViewOrientation.SideOn, AIRCRAFT_TYPE, PLOT_SIZE, REFRESH_RATE, DEBUG, clear=True)
+        self.plotter1 = Plotter(ViewOrientation.TopDown, AIRCRAFT_TYPE, PLOT_SIZE, REFRESH_RATE, FRAMES_PER_PLOT, DEBUG, clear=True)
+        # self.plotter2 = Plotter(ViewOrientation.SideOn, AIRCRAFT_TYPE, PLOT_SIZE, FRAMES_PER_PLOT, DEBUG, clear=True)
 
         #Start a thread to read in and update the plotting data
         self.thread = threading.Thread(target = self.spin)
@@ -39,8 +45,9 @@ class RadarVisualiser:
             try:
                 #If a new obstacle message is available, append it to the new plot.
                 if self.mavlink_subscriber.read_msg():
-                    self.plotter1.update_data(self.mavlink_subscriber.get_msg(), self.mavlink_subscriber.get_altitude())
-                    # self.plotter2.update_data(self.mavlink_subscriber.get_msg(), self.mavlink_subscriber.get_altitude())
+                    self.plotter1.update_data(self.mavlink_subscriber.get_msg(), self.mavlink_subscriber.get_altitude(), self.mavlink_subscriber.get_frame_state())
+                    # self.plotter2.update_data(self.mavlink_subscriber.get_msg(), self.mavlink_subscriber.get_altitude(), self.mavlink_subscriber.get_frame_state())
+                    self.mavlink_subscriber.reset_frame_state()
                 time.sleep(0.001)
             except KeyboardInterrupt:
                 print('Interrupted')

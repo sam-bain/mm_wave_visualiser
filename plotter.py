@@ -4,6 +4,7 @@ import matplotlib.image as mpimg
 import numpy as np
 from enum import Enum
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+import threading
 
 FIG_DPI = 100 #Figure pixels per inch
 FIG_SIZE = 10 #inches
@@ -34,17 +35,27 @@ aircraft_images = [Image('navi_topview.png', 413),
 images_directory = 'images/'
 
 class Plotter:
-    def __init__(self, view_orientation, aircraft_type, plot_size, refresh_rate, debug, clear=True):
+    def __init__(self, view_orientation, aircraft_type, plot_size, refresh_rate, frames_per_plot, debug, clear=True):
         self.view_orientation = view_orientation
         self.aircraft_type = aircraft_type
         self.plot_size = plot_size
         self.refresh_rate = refresh_rate
         self.debug = debug
         self.clear = clear
+        self.frames_per_plot = frames_per_plot
 
+        self.mutex = threading.RLock()
+
+        self.frames_since_plot = 0
+
+        self.x_buffer = np.array([])
+        self.y_buffer = np.array([])
+        self.z_buffer = np.array([])
+        
         self.x_plot = np.array([])
         self.y_plot = np.array([])
         self.z_plot = np.array([])
+
         self.altitude = 0.28
 
         #Select appropriate aircraft image for specified aircraft type and orientation
@@ -65,10 +76,26 @@ class Plotter:
     def show_plot(self):
         plt.show()
 
-    def update_data(self, msg, altitude):
-        self.x_plot = np.append(self.x_plot, msg.x)
-        self.y_plot = np.append(self.y_plot, msg.y)
-        self.z_plot = np.append(self.z_plot, msg.z)
+    def update_data(self, msg, altitude, frame_ready):
+        if frame_ready:
+            self.frames_since_plot += 1
+        else:
+            self.x_buffer = np.append(self.x_buffer, msg.x)
+            self.y_buffer = np.append(self.y_buffer, msg.y)
+            self.z_buffer = np.append(self.z_buffer, msg.z)
+
+        if self.frames_since_plot >= self.frames_per_plot:
+            self.mutex.acquire()
+            self.x_plot = self.x_buffer
+            self.y_plot = self.y_buffer
+            self.z_plot = self.z_buffer
+            self.mutex.release()
+
+            self.x_buffer = np.array([])
+            self.y_buffer = np.array([])
+            self.z_buffer = np.array([])
+            self.frames_since_plot = 0
+
         self.altitude = altitude
 
     def update_display(self, i):
@@ -85,13 +112,19 @@ class Plotter:
             self.ax.clear()
 
             self.update_aircraft_image()
+
+            self.mutex.acquire()
+            x_plot = self.x_plot
+            y_plot = self.y_plot
+            z_plot = self.z_plot
+            self.mutex.release()
+
             
             #Plot the points, determined by the view orientation
             if self.view_orientation == ViewOrientation.TopDown:
-                try:
-                    self.ax.scatter(self.y_plot, self.x_plot, c="green")
-                except ValueError:
-                    print(self.x_plot, self.y_plot)
+                self.mutex.acquire()
+                self.ax.scatter(y_plot, x_plot, c="green")
+                self.mutex.release()
 
                 self.ax.set_xlim(left=-self.plot_size, right=self.plot_size)
                 self.ax.set_ylim(bottom=-self.plot_size, top=self.plot_size)
@@ -101,10 +134,10 @@ class Plotter:
                 self.ax.set_ylabel('X (m)')   
 
             else:
-                try:
-                    self.ax.scatter(self.x_plot, self.z_plot, c="green")
-                except ValueError:
-                    print(self.x_plot, self.z_plot)
+                self.mutex.acquire()
+                self.ax.scatter(x_plot, z_plot, c="green")
+                self.mutex.release()
+
 
         
                 self.ax.set_xlim(left=-self.plot_size, right=self.plot_size)
@@ -114,16 +147,8 @@ class Plotter:
                 self.ax.set_ylabel('Z (m)') 
 
                 self.plot_ground()
-                
-
 
             plt.gca().set_aspect('equal', adjustable='box')
-
-            #Clear the point list
-            if self.clear:
-                self.x_plot = np.array([])
-                self.y_plot = np.array([])
-                self.z_plot = np.array([])
 
 
     def plot_ground(self):
