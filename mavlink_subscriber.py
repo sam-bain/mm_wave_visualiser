@@ -3,89 +3,126 @@ import time
 import sys
 import os
 import math
+from collections import deque
+import threading
+import socket
+from enum import Enum
+
+class SensorStatus(Enum):
+    FRAME_NOT_PROCESSED = 0
+    FRAME_PROCESSING = 1
+    FRAME_PROCESSED = 2
+
+class RadarIDs(Enum):
+    UNDEFINED = 0
+    FRONT_RIGHT = 1
+    REAR_LEFT = 2
+    FRONT_LEFT = 3
+    REAR_RIGHT = 4
+    LENGTH = 5
+
+class PlotData:
+    def __init__(self):
+        self.x_plot = []
+        self.y_plot = []
+        self.z_plot = []
+        self.missing_radars = []
 
 class Point:
-	def convert_to_cartesian(self):
+    def convert_to_cartesian(self):
                 self.z = -self.distance * math.sin(math.radians(self.pitch))
                 xy = self.distance * math.cos(math.radians(self.pitch))
                 self.x = xy * math.cos(math.radians(self.yaw))
                 self.y = xy * math.sin(math.radians(self.yaw))
             
-	def __init__(self, mavlink_message):
-		self.yaw, self.pitch, self.distance, self.obstacle_id = mavlink_message.yaw/1000, mavlink_message.pitch/1000, mavlink_message.distance/1000, mavlink_message.sensor_id
-		self.convert_to_cartesian()
-	def __str__(self):
-		return "X: {}, Y: {}, Z: {}".format(self.x, self.y, self.z)
+    def __init__(self, mavlink_message):
+        self.yaw, self.pitch, self.distance, self.sensor_id = mavlink_message.yaw/10, mavlink_message.pitch/10, mavlink_message.distance/100, mavlink_message.sensor_id
+        self.convert_to_cartesian()
+    def __str__(self):
+        return "ID: {}, Yaw: {}".format(self.sensor_id, self.yaw) #, self.pitch, self.distance)
 
 class MavlinkSubscriber:
-    def __init__(self, ip_add, debug=False):
+    def __init__(self, debug=False):
         self.debug = debug
         #Create a mavlink connection to the specificied UDP port
-        self.master = mavutil.mavlink_connection('udpin:' + ip_add + ':14550')
-        self.recieved_message = None
-        self.altitude = 0
+        self.master = mavutil.mavlink_connection('udpin:'+ socket.gethostbyname(socket.gethostname()) + ':14550')
+        self.altitude = 2.5
         self.counter = 0
         self.frame_finished = False
 
-    def read_msg(self):
-        msg_recieved = False
-        msg = self.master.recv_match()
+        self.max_yaw = 0
+        self.min_yaw = 0
 
-        # print("Hello")
+        self.mutex = threading.RLock()
+
+        self.radar_statuses = [SensorStatus.FRAME_NOT_PROCESSED]*RadarIDs.LENGTH.value
+        self.received_obstacle_buffer = deque()
+        self.received_altitude_buffer = deque()
+
+
+    def read_msg(self):
+        msg = self.master.recv_match(blocking=True) #Hopefully this thread sleeps while it is being blocked waiting for more messages!
         
         if not msg:
-            pass
+            return
+        
+        elif msg.get_type() == "SHORT_RADAR_TELEM":
+            self.received_obstacle_buffer.append(msg)
 
-        else:
-            if msg.get_type() == 'SHORT_RADAR_TELEM': # and (msg.x == 0 or msg.y == 0): #ignore (0,0,0) messages as these are just heartbeats
-                msg_recieved = True
+        elif msg.get_type() == "RANGEFINDER":
+            self.received_altitude_buffer.append(msg)
+        
+    def get_frame(self):
+        data = PlotData()
+        frame_complete = False
+        while (not frame_complete):  
+            if not self.received_obstacle_buffer: #Wait until messages are in buffer before processing
+                time.sleep(0.05)
+                continue
 
-                if msg.yaw == 0 and msg.pitch == 0 and msg.distance == 0:
-                    self.frame_finished = True
-                    self.counter += 1
-                else:
-                    self.recieved_message = Point(msg)
-                    
-                if self.debug:
-                    pass
-                    # print(msg)
-                    # if self.frame_finished:
-                    #     print("--------New frame-----------")
-                    #     self.frame_finished = False
+            msg = self.received_obstacle_buffer.popleft()
 
-            
-            elif msg.get_type() == 'RANGEFINDER':
-                self.altitude = msg.distance
+            if msg.distance == 0: #A message to indicated the start of a frame
+                if (self.radar_statuses[msg.sensor_id] == SensorStatus.FRAME_NOT_PROCESSED):
+                    self.radar_statuses[msg.sensor_id] = SensorStatus.FRAME_PROCESSING
+                
+                elif (self.radar_statuses[msg.sensor_id] == SensorStatus.FRAME_PROCESSING): #two subsequent frame have been received from a single radar, so all radars should have sent their frame
+                    frame_complete = True
 
-        return msg_recieved
-    
-    def get_msg(self):
-        return self.recieved_message
-    
+                    for radar_id in range(len(self.radar_statuses)): 
+                        if self.radar_statuses[radar_id] == SensorStatus.FRAME_NOT_PROCESSED:
+                            data.missing_radars.append(radar_id)
+                        self.radar_statuses[radar_id] = SensorStatus.FRAME_NOT_PROCESSED #Reset frame state for all radars
+                    self.radar_statuses[msg.sensor_id] = SensorStatus.FRAME_PROCESSING #already popped the start message for this radar
+                
+            elif (self.radar_statuses[msg.sensor_id] == SensorStatus.FRAME_PROCESSING):
+                point = Point(msg)
+                data.x_plot.append(point.x)
+                data.y_plot.append(point.y)
+                data.z_plot.append(point.z)
+        
+        return data
+
     def get_altitude(self):
-        return self.altitude
+        distance = None
+        while (distance == None):
+            if (len(self.received_altitude_buffer) > 0):
+                distance = self.received_altitude_buffer.pop().distance
+                self.received_altitude_buffer.clear()
+            else:
+                time.sleep(0.2)
+        return distance
+
     
-    def get_frame_state(self):
-         return self.frame_finished
     
-    def reset_frame_state(self):
-         self.frame_finished = False
     
 if __name__ == "__main__":
-    mavlink_subscriber = MavlinkSubscriber('192.168.2.149', True)
+    mavlink_subscriber = MavlinkSubscriber(True)
     start_time = time.time()
-    frames_per_second_list = []
     while (True):
         try:
-            #If a new obstacle message is available, append it to the new plot.
-            mavlink_subscriber.read_msg()
-            # time.sleep(0.0001)
-            if (time.time() - start_time > 1):
-                
-                frames_per_second_list.append(mavlink_subscriber.counter)
-                print(mavlink_subscriber.counter, sum(frames_per_second_list)/len(frames_per_second_list))
-                mavlink_subscriber.counter = 0
-                start_time = time.time()
+            mavlink_subscriber.get_altitude()
+            time.sleep(0.2)
             
         except KeyboardInterrupt:
             print('Interrupted')
