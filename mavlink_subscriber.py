@@ -95,7 +95,9 @@ class MavlinkSubscriber:
                         self.radar_statuses[radar_id] = SensorStatus.FRAME_NOT_PROCESSED #Reset frame state for all radars
                     self.radar_statuses[msg.sensor_id] = SensorStatus.FRAME_PROCESSING #already popped the start message for this radar
                 
-            elif (self.radar_statuses[msg.sensor_id] == SensorStatus.FRAME_PROCESSING):
+            else:
+                if (self.radar_statuses[msg.sensor_id] == SensorStatus.FRAME_NOT_PROCESSED):
+                    self.radar_statuses[msg.sensor_id] = SensorStatus.FRAME_PROCESSING
                 point = Point(msg)
                 data.x_plot.append(point.x)
                 data.y_plot.append(point.y)

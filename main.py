@@ -10,7 +10,7 @@ import math
 AIRCRAFT_TYPE = AircraftType.NAVI
 
 #Specify the distance from the aircraft displayed in the plot
-PLOT_SIZE = 15 #meters
+PLOT_SIZE = 5 #meters
 
 #Specify the plot refresh rate
 REFRESH_RATE = 5 #Hz
